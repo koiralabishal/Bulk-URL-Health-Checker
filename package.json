@@ -1,0 +1,19 @@
+{
+  "name": "bulk-url-health-checker",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,worker,web -c blue,magenta,green \"pnpm -F @urlchecker/api dev\" \"pnpm -F @urlchecker/worker dev\" \"pnpm -F @urlchecker/web dev\"",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm -F @urlchecker/db db:generate",
+    "db:migrate": "pnpm -F @urlchecker/db db:migrate",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
