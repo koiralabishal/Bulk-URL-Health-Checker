@@ -6,7 +6,7 @@ const STEPS = [
   {
     n: "01",
     title: "Paste your URLs",
-    body: "One per line, or upload a CSV — the first column is read.",
+    body: "One per line, or upload a CSV - the first column is read.",
   },
   {
     n: "02",
@@ -16,7 +16,7 @@ const STEPS = [
   {
     n: "03",
     title: "Read the results",
-    body: "Status, timing and page titles stream in over WebSocket — no refresh needed.",
+    body: "Status, timing and page titles stream in over WebSocket - no refresh needed.",
   },
 ];
 
