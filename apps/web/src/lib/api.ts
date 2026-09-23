@@ -1,8 +1,12 @@
 import {
   BatchDetailSchema,
   BatchesPageSchema,
+  DeleteBatchResponseSchema,
+  DeleteUrlsResponseSchema,
   type BatchDetail,
   type BatchesPage,
+  type DeleteBatchResponse,
+  type DeleteUrlsResponse,
 } from "@urlchecker/shared";
 
 export function apiUrl(): string {
@@ -41,6 +45,26 @@ async function post(path: string): Promise<void> {
   }
 }
 
+async function del(path: string, body?: unknown): Promise<unknown> {
+  const res = await fetch(`${apiUrl()}${path}`, {
+    method: "DELETE",
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let message = `API returned ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data?.error) message = data.error;
+    } catch {
+      // keep default
+    }
+    throw new Error(message);
+  }
+  if (res.status === 204) return { ok: true };
+  return res.json();
+}
+
 export async function createBatch(urls: string[]): Promise<string> {
   const res = await fetch(`${apiUrl()}/api/batches`, {
     method: "POST",
@@ -66,4 +90,24 @@ export function reanalyzeUrl(batchId: string, urlId: string): Promise<void> {
 
 export function cancelBatch(batchId: string): Promise<void> {
   return post(`/api/batches/${batchId}/cancel`);
+}
+
+export async function deleteBatch(batchId: string): Promise<DeleteBatchResponse> {
+  const data = await del(`/api/batches/${batchId}`);
+  return DeleteBatchResponseSchema.parse(data);
+}
+
+export async function deleteBatches(ids: string[]): Promise<DeleteBatchResponse> {
+  const data = await del(`/api/batches`, { ids });
+  return DeleteBatchResponseSchema.parse(data);
+}
+
+export async function deleteUrl(batchId: string, urlId: string): Promise<DeleteUrlsResponse> {
+  const data = await del(`/api/batches/${batchId}/urls/${urlId}`);
+  return DeleteUrlsResponseSchema.parse(data);
+}
+
+export async function deleteUrls(batchId: string, urlIds: string[]): Promise<DeleteUrlsResponse> {
+  const data = await del(`/api/batches/${batchId}/urls`, { urlIds });
+  return DeleteUrlsResponseSchema.parse(data);
 }

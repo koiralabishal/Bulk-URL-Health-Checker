@@ -2,7 +2,15 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { cancelBatch, reanalyzeBatch, reanalyzeUrl, retryFailed } from "@/lib/api";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import {
+  cancelBatch,
+  deleteBatch,
+  deleteUrl,
+  reanalyzeBatch,
+  reanalyzeUrl,
+  retryFailed,
+} from "@/lib/api";
 
 function useAction(action: () => Promise<void>, refresh: boolean) {
   const router = useRouter();
@@ -27,7 +35,7 @@ function useAction(action: () => Promise<void>, refresh: boolean) {
 }
 
 const sizeClass = (size: "sm" | "md") =>
-  size === "sm" ? "px-2.5 py-1 text-xs" : "px-3.5 py-1.5 text-sm";
+  size === "sm" ? "whitespace-nowrap px-2.5 py-1 text-xs" : "whitespace-nowrap px-3.5 py-1.5 text-sm";
 
 export function ReanalyzeBatchButton({
   batchId,
@@ -118,5 +126,128 @@ export function RetryFailedButton({
     >
       {busy ? "Retrying…" : `Retry failed (${failedCount})`}
     </button>
+  );
+}
+
+/**
+ * Permanently deletes the batch and all of its URL rows (cascade).
+ * When `redirect` is set (detail page), navigates back to History after delete.
+ */
+export function DeleteBatchButton({
+  batchId,
+  size = "md",
+  redirect = false,
+  confirmMessage = "Delete this batch and all of its URLs? This cannot be undone.",
+  onDeleted,
+}: {
+  batchId: string;
+  size?: "sm" | "md";
+  redirect?: boolean;
+  confirmMessage?: string;
+  onDeleted?: () => void;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteBatch(batchId);
+      setOpen(false);
+      onDeleted?.();
+      if (redirect) router.push("/batches");
+      else router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`rounded-md border border-rose-200 bg-white font-medium text-rose-600 transition hover:border-rose-400 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 ${sizeClass(size)}`}
+        disabled={busy}
+        title={error ?? "Permanently delete this batch"}
+        onClick={() => setOpen(true)}
+      >
+        {busy ? "Deleting…" : "Delete"}
+      </button>
+      <ConfirmDialog
+        open={open}
+        title="Delete batch?"
+        message={confirmMessage}
+        confirmLabel="Delete"
+        busy={busy}
+        onConfirm={confirm}
+        onCancel={() => {
+          if (!busy) setOpen(false);
+        }}
+      />
+    </>
+  );
+}
+
+/** Permanently deletes one URL row from a batch. */
+export function DeleteUrlButton({
+  batchId,
+  urlId,
+  size = "sm",
+  onDeleted,
+}: {
+  batchId: string;
+  urlId: string;
+  size?: "sm" | "md";
+  onDeleted?: (result: { batchDeleted?: boolean }) => void;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await deleteUrl(batchId, urlId);
+      setOpen(false);
+      onDeleted?.(res);
+      if (res.batchDeleted) router.push("/batches");
+      else router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`rounded-md border border-rose-200 bg-white font-medium text-rose-600 transition hover:border-rose-400 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 ${sizeClass(size)}`}
+        disabled={busy}
+        title={error ?? "Remove this URL"}
+        onClick={() => setOpen(true)}
+      >
+        {busy ? "…" : "Delete"}
+      </button>
+      <ConfirmDialog
+        open={open}
+        title="Delete URL?"
+        message="Remove this URL from the batch? This cannot be undone."
+        confirmLabel="Delete"
+        busy={busy}
+        onConfirm={confirm}
+        onCancel={() => {
+          if (!busy) setOpen(false);
+        }}
+      />
+    </>
   );
 }

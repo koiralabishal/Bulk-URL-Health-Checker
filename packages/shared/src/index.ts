@@ -95,6 +95,31 @@ export const BatchesPageSchema = z.object({
 });
 export type BatchesPage = z.infer<typeof BatchesPageSchema>;
 
+export const BulkDeleteBatchesSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, "Select at least one batch").max(100),
+});
+
+export const BulkDeleteUrlsSchema = z.object({
+  urlIds: z.array(z.string().uuid()).min(1, "Select at least one URL").max(1000),
+});
+
+export const DeleteBatchResponseSchema = z.object({
+  ok: z.literal(true),
+  deleted: z.number().int().nonnegative(),
+});
+
+export const DeleteUrlsResponseSchema = z.object({
+  ok: z.literal(true),
+  deleted: z.number().int().nonnegative(),
+  batchDeleted: z.boolean().optional(),
+  totalCount: z.number().int().nonnegative().optional(),
+});
+
+export type BulkDeleteBatchesInput = z.infer<typeof BulkDeleteBatchesSchema>;
+export type BulkDeleteUrlsInput = z.infer<typeof BulkDeleteUrlsSchema>;
+export type DeleteBatchResponse = z.infer<typeof DeleteBatchResponseSchema>;
+export type DeleteUrlsResponse = z.infer<typeof DeleteUrlsResponseSchema>;
+
 export const ServerToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("snapshot"),

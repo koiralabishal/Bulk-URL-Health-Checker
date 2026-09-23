@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { ReanalyzeBatchButton, RetryFailedButton } from "@/components/actions";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { DeleteBatchButton, ReanalyzeBatchButton, RetryFailedButton } from "@/components/actions";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { deleteBatches } from "@/lib/api";
 import { BATCH_STATUS_LABELS, formatDate, progressOf } from "@/lib/format";
 import { useBatchesSocket } from "@/lib/use-batches-socket";
 import type { BatchesPage } from "@urlchecker/shared";
@@ -72,7 +76,46 @@ function Pagination({ page, totalPages, total }: { page: number; totalPages: num
 
 export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
   const { page: live, connected } = useBatchesSocket(initial);
+  const router = useRouter();
   const totalPages = Math.max(1, Math.ceil(live.total / live.pageSize));
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+
+  const allIds = live.items.map((b) => b.id);
+  const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
+  const someSelected = allIds.some((id) => selected.has(id));
+
+  const toggleOne = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(allIds));
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const runBulkDelete = async () => {
+    if (bulkBusy || selected.size === 0) return;
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      await deleteBatches([...selected]);
+      setBulkConfirmOpen(false);
+      clearSelection();
+      router.refresh();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : "Bulk delete failed");
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -92,12 +135,49 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
             {live.total} batch{live.total === 1 ? "" : "es"} · page {live.page} of {totalPages}
           </p>
         </div>
-        <Link
-          href="/"
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 hover:no-underline"
-        >
-          New analysis
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {someSelected && (
+            <>
+              <span className="text-xs font-medium text-stone-500">
+                {selected.size} selected
+              </span>
+              <button
+                type="button"
+                onClick={() => setBulkConfirmOpen(true)}
+                disabled={bulkBusy}
+                className="rounded-md border border-rose-300 bg-rose-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                title={bulkError ?? "Delete selected batches"}
+              >
+                {bulkBusy ? "Deleting…" : `Delete selected (${selected.size})`}
+              </button>
+              <ConfirmDialog
+                open={bulkConfirmOpen}
+                title={`Delete ${selected.size} batch${selected.size === 1 ? "" : "es"}?`}
+                message={`Delete ${selected.size} batch${selected.size === 1 ? "" : "es"} and all their URLs? This cannot be undone.`}
+                confirmLabel="Delete"
+                busy={bulkBusy}
+                onConfirm={runBulkDelete}
+                onCancel={() => {
+                  if (!bulkBusy) setBulkConfirmOpen(false);
+                }}
+              />
+              <button
+                type="button"
+                onClick={clearSelection}
+                disabled={bulkBusy}
+                className="rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-medium text-stone-600 transition hover:bg-stone-50"
+              >
+                Clear
+              </button>
+            </>
+          )}
+          <Link
+            href="/"
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 hover:no-underline"
+          >
+            New analysis
+          </Link>
+        </div>
       </div>
 
       {live.items.length === 0 ? (
@@ -116,9 +196,21 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
       ) : (
         <>
           <div className="overflow-x-auto rounded-xl border border-stone-200 bg-white shadow-sm">
-            <table className="w-full">
+            <table className="w-full min-w-[900px]">
               <thead>
                 <tr className="border-b border-stone-200">
+                  <th className="w-10 px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someSelected && !allSelected;
+                      }}
+                      onChange={toggleAll}
+                      aria-label="Select all batches on this page"
+                      className="h-3.5 w-3.5 rounded border-stone-300 accent-indigo-600"
+                    />
+                  </th>
                   <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                     Batch
                   </th>
@@ -131,7 +223,7 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
                   <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                     Results
                   </th>
-                  <th className="hidden px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500 md:table-cell">
+                  <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                     Created
                   </th>
                   <th className="px-4 py-2.5" />
@@ -141,7 +233,21 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
                 {live.items.map((batch) => {
                   const progress = progressOf(batch);
                   return (
-                    <tr key={batch.id} className="transition hover:bg-stone-50">
+                    <tr
+                      key={batch.id}
+                      className={`transition hover:bg-stone-50 ${
+                        selected.has(batch.id) ? "bg-indigo-50/40" : ""
+                      }`}
+                    >
+                      <td className="px-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(batch.id)}
+                          onChange={() => toggleOne(batch.id)}
+                          aria-label={`Select batch ${batch.id.slice(0, 8)}`}
+                          className="h-3.5 w-3.5 rounded border-stone-300 accent-indigo-600"
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <Link
                           href={`/batches/${batch.id}`}
@@ -198,14 +304,14 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
                           )}
                         </div>
                       </td>
-                      <td className="hidden px-4 py-3 text-[13px] text-stone-500 md:table-cell">
+                      <td className="whitespace-nowrap px-4 py-3 text-[13px] text-stone-500">
                         {formatDate(batch.createdAt)}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex flex-nowrap items-center gap-2">
                           <Link
                             href={`/batches/${batch.id}`}
-                            className="rounded-md px-2 py-1 text-xs font-medium text-stone-600 transition hover:bg-stone-100 hover:text-stone-900 hover:no-underline"
+                            className="whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-stone-600 transition hover:bg-stone-100 hover:text-stone-900 hover:no-underline"
                           >
                             View
                           </Link>
@@ -215,6 +321,7 @@ export default function BatchesHistory({ initial }: { initial: BatchesPage }) {
                             size="sm"
                           />
                           <ReanalyzeBatchButton batchId={batch.id} size="sm" />
+                          <DeleteBatchButton batchId={batch.id} size="sm" />
                         </div>
                       </td>
                     </tr>

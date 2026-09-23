@@ -6,10 +6,14 @@ import type {
   BatchStatus,
   BatchSummary,
   CreateBatchResponse,
+  DeleteBatchResponse,
+  DeleteUrlsResponse,
   UrlCounts,
 } from "@urlchecker/shared";
 import {
   BatchesPageSchema,
+  BulkDeleteBatchesSchema,
+  BulkDeleteUrlsSchema,
   CreateBatchResponseSchema,
   CreateBatchSchema,
   DEFAULT_PAGE_SIZE,
@@ -83,6 +87,31 @@ async function readCsvUrls(req: FastifyRequest): Promise<string[]> {
     .split(/\r?\n/)
     .map((line) => line.split(",")[0]?.trim() ?? "")
     .filter((url) => url && url.toLowerCase() !== "url");
+}
+
+async function removeWaitingJobs(filter: (job: { data: UrlCheckJobData }) => boolean): Promise<void> {
+  const jobs = await urlQueue.getJobs(["waiting", "delayed", "prioritized"]);
+  await Promise.all(jobs.filter(filter).map((job) => job.remove()));
+}
+
+/** Keep header in sync after URL deletes; remove the batch if it became empty. */
+async function syncBatchAfterUrlDeletes(batchId: string): Promise<{ batchDeleted: boolean; totalCount: number }> {
+  const remaining = await db
+    .select({ id: batchUrls.id })
+    .from(batchUrls)
+    .where(eq(batchUrls.batchId, batchId));
+
+  if (remaining.length === 0) {
+    await removeWaitingJobs((job) => job.data.batchId === batchId);
+    await db.delete(batches).where(eq(batches.id, batchId));
+    return { batchDeleted: true, totalCount: 0 };
+  }
+
+  await db
+    .update(batches)
+    .set({ totalCount: remaining.length, updatedAt: new Date() })
+    .where(eq(batches.id, batchId));
+  return { batchDeleted: false, totalCount: remaining.length };
 }
 
 export async function registerBatchesRoutes(fastify: FastifyInstance): Promise<void> {
@@ -359,6 +388,103 @@ export async function registerBatchesRoutes(fastify: FastifyInstance): Promise<v
       if (summary) await publish(batch.id, { type: "batch_updated", batchId: batch.id, batch: summary });
 
       return { ok: true, runSeq };
+    },
+  );
+
+  // ---- Delete ----------------------------------------------------------
+
+  // Delete one batch (FK cascade removes its URL rows).
+  fastify.delete<{ Params: { id: string }; Reply: DeleteBatchResponse }>(
+    "/api/batches/:id",
+    async (req, reply) => {
+      const batch = await findBatchById(req.params.id);
+      if (!batch) return reply.code(404).send({ error: "Batch not found" } as never);
+
+      await removeWaitingJobs((job) => job.data.batchId === batch.id);
+      await db.delete(batches).where(eq(batches.id, batch.id));
+
+      await invalidateBatchesList();
+      return { ok: true, deleted: 1 };
+    },
+  );
+
+  // Bulk delete batches by id.
+  fastify.delete<{ Body: unknown }>("/api/batches", async (req, reply) => {
+    const parsed = BulkDeleteBatchesSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid body" } as never);
+    }
+    const ids = [...new Set(parsed.data.ids)];
+
+    await removeWaitingJobs((job) => ids.includes(job.data.batchId));
+    await db.delete(batches).where(inArray(batches.id, ids));
+
+    await invalidateBatchesList();
+    return { ok: true as const, deleted: ids.length };
+  });
+
+  // Delete one URL row from a batch.
+  fastify.delete<{ Params: { id: string; urlId: string } }>(
+    "/api/batches/:id/urls/:urlId",
+    async (req, reply) => {
+      const batch = await findBatchById(req.params.id);
+      if (!batch) return reply.code(404).send({ error: "Batch not found" } as never);
+
+      const [row] = await db
+        .select({ id: batchUrls.id })
+        .from(batchUrls)
+        .where(and(eq(batchUrls.id, req.params.urlId), eq(batchUrls.batchId, batch.id)))
+        .limit(1);
+      if (!row) return reply.code(404).send({ error: "URL not found in this batch" } as never);
+
+      await removeWaitingJobs((job) => job.data.batchId === batch.id && job.data.urlId === row.id);
+      await db.delete(batchUrls).where(eq(batchUrls.id, row.id));
+
+      const { batchDeleted, totalCount } = await syncBatchAfterUrlDeletes(batch.id);
+      await invalidateBatchesList();
+      if (!batchDeleted) {
+        const summary = await getBatchSummary(batch.id).catch(() => null);
+        if (summary) publish(batch.id, { type: "batch_updated", batchId: batch.id, batch: summary }).catch(() => {});
+      }
+
+      return { ok: true as const, deleted: 1, batchDeleted, totalCount };
+    },
+  );
+
+  // Bulk delete URL rows from one batch.
+  fastify.delete<{ Params: { id: string }; Body: unknown }>(
+    "/api/batches/:id/urls",
+    async (req, reply) => {
+      const batch = await findBatchById(req.params.id);
+      if (!batch) return reply.code(404).send({ error: "Batch not found" } as never);
+
+      const parsed = BulkDeleteUrlsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid body" } as never);
+      }
+      const urlIds = [...new Set(parsed.data.urlIds)];
+
+      const owned = await db
+        .select({ id: batchUrls.id })
+        .from(batchUrls)
+        .where(and(eq(batchUrls.batchId, batch.id), inArray(batchUrls.id, urlIds)));
+      const ownedIds = owned.map((r) => r.id);
+      if (ownedIds.length === 0) {
+        return reply.code(404).send({ error: "No matching URLs in this batch" } as never);
+      }
+
+      const ownedSet = new Set(ownedIds);
+      await removeWaitingJobs((job) => job.data.batchId === batch.id && ownedSet.has(job.data.urlId));
+      await db.delete(batchUrls).where(inArray(batchUrls.id, ownedIds));
+
+      const { batchDeleted, totalCount } = await syncBatchAfterUrlDeletes(batch.id);
+      await invalidateBatchesList();
+      if (!batchDeleted) {
+        const summary = await getBatchSummary(batch.id).catch(() => null);
+        if (summary) publish(batch.id, { type: "batch_updated", batchId: batch.id, batch: summary }).catch(() => {});
+      }
+
+      return { ok: true as const, deleted: ownedIds.length, batchDeleted, totalCount };
     },
   );
 }

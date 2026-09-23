@@ -15,7 +15,8 @@ function requireEnv(name: string): string {
 export const env = {
   DATABASE_URL: requireEnv("DATABASE_URL"),
   REDIS_URL: requireEnv("REDIS_URL"),
-  // Render free-tier Web Services must bind a port; worker itself is headless.
-  PORT: Number(process.env.PORT ?? 3001),
+  // Only meaningful on Render (free Web Service port scan). Locally the API
+  // owns :3001 — never bind it from the worker or SSR fetches get "worker ok".
+  HEALTH_PORT: process.env.RENDER ? Number(process.env.PORT ?? 0) || null : null,
   HOST: process.env.HOST ?? "0.0.0.0",
 };

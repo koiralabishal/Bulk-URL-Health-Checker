@@ -248,20 +248,23 @@ await (async () => {
   console.log(`[worker] listening on queue ${URL_QUEUE_NAME} (concurrency 5, 10 req/s global)`);
 
   // Minimal health endpoint so Render free-tier Web Services pass the port scan.
-  // The worker does no HTTP work — this only answers GET / with 200.
-  const health = createServer((req, res) => {
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end(req.url === "/health" ? "ok" : "worker ok");
-  });
-  health.listen(env.PORT, env.HOST, () => {
-    console.log(`[worker] health on http://${env.HOST}:${env.PORT}`);
-  });
+  // Skipped locally so the worker never steals the API's :3001.
+  let health: ReturnType<typeof createServer> | null = null;
+  if (env.HEALTH_PORT) {
+    health = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end(req.url === "/health" ? "ok" : "worker ok");
+    });
+    health.listen(env.HEALTH_PORT, env.HOST, () => {
+      console.log(`[worker] health on http://${env.HOST}:${env.HEALTH_PORT}`);
+    });
+  }
 
   const shutdown = async (signal: string) => {
     console.log(`[worker] ${signal} received, shutting down`);
     const timer = setTimeout(() => process.exit(1), 5000);
     timer.unref();
-    health.close();
+    health?.close();
     await worker.close().catch(() => {});
     await workerConnection.quit().catch(() => {});
     await publishClient.quit().catch(() => {});

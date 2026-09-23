@@ -1,7 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { CancelBatchButton, ReanalyzeBatchButton, ReanalyzeUrlButton, RetryFailedButton } from "@/components/actions";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import {
+  CancelBatchButton,
+  DeleteBatchButton,
+  DeleteUrlButton,
+  ReanalyzeBatchButton,
+  ReanalyzeUrlButton,
+  RetryFailedButton,
+} from "@/components/actions";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { deleteUrls } from "@/lib/api";
 import { BATCH_STATUS_LABELS, formatDate, formatDuration, progressOf, STATUS_LABELS } from "@/lib/format";
 import { useBatchSocket } from "@/lib/use-batch-socket";
 import type { BatchDetail } from "@urlchecker/shared";
@@ -23,8 +34,48 @@ const URL_PILL: Record<string, string> = {
 
 export default function BatchLive({ batchId, initial }: { batchId: string; initial: BatchDetail }) {
   const { batch, connected } = useBatchSocket(batchId, initial);
+  const router = useRouter();
   const progress = progressOf(batch);
   const active = batch.status === "running" || batch.status === "pending";
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+
+  const allIds = batch.urls.map((u) => u.id);
+  const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
+  const someSelected = allIds.some((id) => selected.has(id));
+
+  const toggleOne = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(allIds));
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const runBulkDelete = async () => {
+    if (bulkBusy || selected.size === 0) return;
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      const res = await deleteUrls(batchId, [...selected]);
+      setBulkConfirmOpen(false);
+      clearSelection();
+      if (res.batchDeleted) router.push("/batches");
+      else router.refresh();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : "Bulk delete failed");
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -62,10 +113,11 @@ export default function BatchLive({ batchId, initial }: { batchId: string; initi
             {batch.totalCount} URLs · started {formatDate(batch.createdAt)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <RetryFailedButton batchId={batchId} failedCount={batch.counts.failed} />
           {active && <CancelBatchButton batchId={batchId} />}
           <ReanalyzeBatchButton batchId={batchId} />
+          <DeleteBatchButton batchId={batchId} redirect />
         </div>
       </header>
 
@@ -101,10 +153,59 @@ export default function BatchLive({ batchId, initial }: { batchId: string; initi
         <span className="text-stone-400">{batch.counts.queued} queued</span>
       </p>
 
+      {someSelected && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+          <span className="text-xs font-semibold text-rose-700">
+            {selected.size} URL{selected.size === 1 ? "" : "s"} selected
+          </span>
+          <button
+            type="button"
+            onClick={() => setBulkConfirmOpen(true)}
+            disabled={bulkBusy}
+            className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+            title={bulkError ?? "Remove selected URLs from this batch"}
+          >
+            {bulkBusy ? "Removing…" : `Remove selected (${selected.size})`}
+          </button>
+          <ConfirmDialog
+            open={bulkConfirmOpen}
+            title={`Remove ${selected.size} URL${selected.size === 1 ? "" : "s"}?`}
+            message={`Remove ${selected.size} URL${selected.size === 1 ? "" : "s"} from this batch? This cannot be undone.`}
+            confirmLabel="Remove"
+            busy={bulkBusy}
+            onConfirm={runBulkDelete}
+            onCancel={() => {
+              if (!bulkBusy) setBulkConfirmOpen(false);
+            }}
+          />
+          <button
+            type="button"
+            onClick={clearSelection}
+            disabled={bulkBusy}
+            className="rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-medium text-rose-700 transition hover:bg-rose-100"
+          >
+            Clear
+          </button>
+          {bulkError && <span className="text-xs text-rose-600">{bulkError}</span>}
+        </div>
+      )}
+
       <div className="mt-6 overflow-x-auto rounded-xl border border-stone-200 bg-white shadow-sm">
-        <table className="w-full">
+        <table className="w-full min-w-[1000px]">
           <thead>
             <tr className="border-b border-stone-200">
+              <th className="w-10 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected && !allSelected;
+                  }}
+                  onChange={toggleAll}
+                  aria-label="Select all URLs"
+                  className="h-3.5 w-3.5 rounded border-stone-300 accent-indigo-600"
+                />
+              </th>
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                 URL
               </th>
@@ -117,7 +218,7 @@ export default function BatchLive({ batchId, initial }: { batchId: string; initi
               <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                 Time
               </th>
-              <th className="hidden px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500 lg:table-cell">
+              <th className="px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                 Title / error
               </th>
               <th className="px-4 py-2.5" />
@@ -125,7 +226,21 @@ export default function BatchLive({ batchId, initial }: { batchId: string; initi
           </thead>
           <tbody className="divide-y divide-stone-100">
             {batch.urls.map((url) => (
-              <tr key={url.id} className="transition hover:bg-stone-50">
+              <tr
+                key={url.id}
+                className={`transition hover:bg-stone-50 ${
+                  selected.has(url.id) ? "bg-indigo-50/40" : ""
+                }`}
+              >
+                <td className="px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(url.id)}
+                    onChange={() => toggleOne(url.id)}
+                    aria-label={`Select ${url.url}`}
+                    className="h-3.5 w-3.5 rounded border-stone-300 accent-indigo-600"
+                  />
+                </td>
                 <td
                   className="max-w-md truncate px-4 py-2.5 font-mono text-[12.5px] text-stone-700"
                   title={url.url}
@@ -151,13 +266,16 @@ export default function BatchLive({ batchId, initial }: { batchId: string; initi
                   {formatDuration(url.responseMs)}
                 </td>
                 <td
-                  className="hidden max-w-lg truncate px-4 py-2.5 text-[13px] text-stone-500 lg:table-cell"
+                  className="max-w-lg truncate px-4 py-2.5 text-[13px] text-stone-500"
                   title={url.pageTitle ?? url.error ?? ""}
                 >
                   {url.pageTitle ?? url.error ?? "–"}
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  <ReanalyzeUrlButton batchId={batchId} urlId={url.id} size="sm" />
+                  <div className="inline-flex flex-nowrap items-center gap-1.5">
+                    <ReanalyzeUrlButton batchId={batchId} urlId={url.id} size="sm" />
+                    <DeleteUrlButton batchId={batchId} urlId={url.id} size="sm" />
+                  </div>
                 </td>
               </tr>
             ))}
