@@ -15,4 +15,7 @@ function requireEnv(name: string): string {
 export const env = {
   DATABASE_URL: requireEnv("DATABASE_URL"),
   REDIS_URL: requireEnv("REDIS_URL"),
+  // Render free-tier Web Services must bind a port; worker itself is headless.
+  PORT: Number(process.env.PORT ?? 3001),
+  HOST: process.env.HOST ?? "0.0.0.0",
 };

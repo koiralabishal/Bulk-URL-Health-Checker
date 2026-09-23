@@ -9,6 +9,7 @@ import {
 } from "@urlchecker/shared";
 import { Job, Worker } from "bullmq";
 import { Redis, type RedisOptions } from "ioredis";
+import { createServer } from "node:http";
 import { env } from "./env";
 import { db, pool } from "./db";
 import { checkUrl, type CheckOutcome } from "./check";
@@ -246,10 +247,21 @@ await (async () => {
   const worker = createWorker();
   console.log(`[worker] listening on queue ${URL_QUEUE_NAME} (concurrency 5, 10 req/s global)`);
 
+  // Minimal health endpoint so Render free-tier Web Services pass the port scan.
+  // The worker does no HTTP work — this only answers GET / with 200.
+  const health = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end(req.url === "/health" ? "ok" : "worker ok");
+  });
+  health.listen(env.PORT, env.HOST, () => {
+    console.log(`[worker] health on http://${env.HOST}:${env.PORT}`);
+  });
+
   const shutdown = async (signal: string) => {
     console.log(`[worker] ${signal} received, shutting down`);
     const timer = setTimeout(() => process.exit(1), 5000);
     timer.unref();
+    health.close();
     await worker.close().catch(() => {});
     await workerConnection.quit().catch(() => {});
     await publishClient.quit().catch(() => {});
